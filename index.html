@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1224" />
+    <title>Clavis OMR — partitura a partir de foto</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Ctext y=%22.9em%22 font-size=%2290%22%3E%F0%9F%8E%BC%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./src/omr.css" />
+  </head>
+  <body>
+    <header class="top">
+      <a id="clavis" class="brand" href="../">🎼 Clavis</a>
+      <span class="title">OMR <span class="tag">protótipo</span></span>
+    </header>
+    <main>
+      <p class="intro">
+        Fotografe ou escolha as páginas de um hino. O reconhecimento roda <b>todo no seu aparelho</b> (nada é enviado):
+        leva alguns minutos por página. Na primeira vez são baixados ~180 MB (modelos e Python), que ficam guardados.
+      </p>
+
+      <section class="card">
+        <h2>1. Páginas</h2>
+        <div class="row">
+          <label class="btn">📷 Fotografar<input id="camera" type="file" accept="image/*" capture="environment" hidden /></label>
+          <label class="btn">🖼️ Escolher imagens…<input id="files" type="file" accept="image/*" multiple hidden /></label>
+        </div>
+        <ol id="pages" class="pages"></ol>
+        <p id="noPages" class="muted">Nenhuma página ainda. Uma foto por página, com a página inteira e reta.</p>
+      </section>
+
+      <section class="card">
+        <h2>2. Reconhecer</h2>
+        <div class="row">
+          <label class="field">Título <input id="title" type="text" placeholder="ex.: Hino 127" /></label>
+          <label class="check"><input id="webgpu" type="checkbox" /> Usar a GPU (WebGPU) na segmentação</label>
+        </div>
+        <div class="row">
+          <button id="run" class="btn primary" disabled>▶ Reconhecer</button>
+          <button id="stop" class="btn" hidden>■ Parar</button>
+        </div>
+        <div id="progressBox" hidden>
+          <progress id="progress" max="1" value="0"></progress>
+          <p id="status" class="muted"></p>
+        </div>
+      </section>
+
+      <section id="resultBox" class="card" hidden>
+        <h2>3. Resultado</h2>
+        <p class="muted">É um rascunho: confira as notas antes de estudar por ele.</p>
+        <div class="row">
+          <button id="open" class="btn primary">🎹 Abrir no Clavis</button>
+          <button id="download" class="btn">⬇️ Baixar .musicxml</button>
+        </div>
+      </section>
+
+      <details class="card">
+        <summary>Medições</summary>
+        <pre id="log"></pre>
+      </details>
+
+      <footer class="muted">
+        Usa o <a href="https://github.com/liebharc/homr" target="_blank" rel="noopener">homr</a> 0.7.0 (AGPL-3.0) com
+        <a href="https://pyodide.org" target="_blank" rel="noopener">Pyodide</a> e
+        <a href="https://onnxruntime.ai" target="_blank" rel="noopener">ONNX Runtime Web</a>. Este módulo é software livre
+        (AGPL-3.0): <a id="source" href="https://github.com/ccb-londrina/clavis-omr" target="_blank" rel="noopener">código-fonte</a>.
+      </footer>
+    </main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

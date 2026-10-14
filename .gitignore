@@ -1,0 +1,7 @@
+node_modules
+dist
+*.local
+__pycache__/
+
+# Modelos (~150 MB): npm run omr-models
+public/omr-models/
