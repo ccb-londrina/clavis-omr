@@ -93,8 +93,11 @@ ui.pages.onclick = (e) => {
 ui.camera.onchange = () => void addFiles(ui.camera.files).then(() => (ui.camera.value = ""));
 ui.files.onchange = () => void addFiles(ui.files.files).then(() => (ui.files.value = ""));
 
-/** Recortes de 320×320 por lote na segmentação (o homr usa 8; ?lote=N na URL muda, para medir a memória). */
-const SEGNET_BATCH = Math.max(1, +(new URLSearchParams(location.search).get("lote") ?? 8) || 8);
+/**
+ * Recortes de 320×320 por lote na segmentação (o homr usa 8; ?lote=N na URL muda, para medir). O lote 2 dá o mesmo
+ * resultado com bem menos memória: ~200 MB a menos no WebAssembly e ~600 MB a menos na GPU, no mesmo tempo.
+ */
+const SEGNET_BATCH = Math.max(1, +(new URLSearchParams(location.search).get("lote") ?? 2) || 2);
 
 /** Lotes da segmentação, estimados pelo tamanho da página que o homr usa (1920 px de largura). */
 const segBatches = (p: Page) => Math.ceil((Math.ceil((1920 * p.height) / p.width / 320) * 6) / SEGNET_BATCH);

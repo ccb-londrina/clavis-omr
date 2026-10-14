@@ -4,8 +4,9 @@ Implementa só o que o homr 0.7.0 usa (InferenceSession + io_binding + OrtValue)
 onnxruntime-web devolve uma Promise, então `run_with_iobinding` aqui é uma corrotina: o patch em
 `clavis_omr.py` troca as chamadas do homr por `await ...run_with_iobinding(...)`.
 
-Os tensores de saída ficam no JS até alguém pedir `.numpy()`: o cache do decoder (32 tensores por
-passo) vai de uma chamada à seguinte sem passar pelo Python.
+As redes rodam em outro worker (um por modelo). As saídas chegam como objetos do JS e só viram numpy
+quando alguém pede `.numpy()`; o cache do decoder (32 tensores por passo) nem sai do worker do
+onnxruntime: volta para ele como referência no passo seguinte.
 
 Parte do Clavis OMR — AGPL-3.0-or-later (veja README.md na raiz do repositório).
 """
@@ -14,7 +15,7 @@ import os
 
 import numpy as np
 
-# Objeto JS com run(model, nomes_entrada, valores_entrada, nomes_saida) -> Promise<Tensor[]>.
+# Objeto JS com run(model, nomes_entrada, valores_entrada, nomes_saida) -> Promise<tensor[]>.
 # Definido pelo worker (src/worker.ts) antes de importar o homr.
 _bridge = None
 
@@ -64,11 +65,13 @@ class OrtValue:
     def numpy(self):
         if self._array is None:
             t = self._tensor
+            if getattr(t, "data", None) is None:
+                raise RuntimeError("tensor guardado no worker do onnxruntime: não dá para ler no Python")
             out = np.empty(tuple(int(d) for d in t.dims), dtype=_DTYPES[t.type])
             if out.size:
                 t.data.assign_to(out)
             self._array = out
-            self._tensor = None  # libera o tensor do JS
+            self._tensor = None
         return self._array
 
     def _feed(self):

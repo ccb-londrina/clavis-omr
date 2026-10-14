@@ -1,10 +1,10 @@
-// Clavis OMR — Web Worker: roda o homr (Python) no Pyodide e as redes no onnxruntime-web.
+// Clavis OMR — Web Worker: roda o homr (Python) no Pyodide. As redes rodam no onnxruntime-web, em outros workers
+// (um por modelo, veja ort-serve.ts), para que a memória delas volte ao sistema quando o modelo sai de uso.
 // Parte do Clavis OMR — AGPL-3.0-or-later (veja README.md e LICENSE).
-import * as ort from "onnxruntime-web/webgpu";
-import type { FromWorker, ToWorker } from "./protocol";
+import { type Kind, kindOf, MODELS, modelBytes } from "./models";
+import type { FromOrt, FromWorker, TensorRef, ToOrt, ToWorker, WireTensor } from "./protocol";
 
 const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
-const ORT_WASM = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
 // O homr e o musicxml vêm do PyPI sem alteração (wheels conferidas pelo sha256).
 const WHEELS = [
   {
@@ -16,18 +16,7 @@ const WHEELS = [
     sha256: "d055293ba6aeee2714e2c1ae21f0a5fb18e01109a15d3605ac5222b4cea48803",
   },
 ];
-// Mesmos arquivos que o homr 0.7.0 baixa (scripts/omr-models.mjs os põe em public/omr-models/).
-const MODELS = [
-  "segnet_308-3296ccd40960f90ca6ab9c035cca945675d30a0f.onnx",
-  "encoder_pytorch_model_396-f6feedb42ff90087d898b0941a55d040fa6b2903.onnx",
-  "decoder_pytorch_model_396-f6feedb42ff90087d898b0941a55d040fa6b2903.onnx",
-];
-const MODEL_CACHE = "clavis-omr-modelos-v1";
 const PY_FILES = import.meta.glob("./py/**/*.py", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
-
-type Kind = "segnet" | "encoder" | "decoder";
-const kindOf = (model: string): Kind =>
-  model.startsWith("segnet") ? "segnet" : model.startsWith("encoder") ? "encoder" : "decoder";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 let py: any;
@@ -36,7 +25,6 @@ let modelBase = "";
 let useWebGPU = false;
 let segnetBatch = 8;
 let backend: Record<Kind, string> = { segnet: "wasm", encoder: "wasm", decoder: "wasm" };
-const sessions = new Map<string, Promise<ort.InferenceSession>>();
 const times: Record<Kind, { ms: number; runs: number; createMs: number }> = {
   segnet: { ms: 0, runs: 0, createMs: 0 },
   encoder: { ms: 0, runs: 0, createMs: 0 },
@@ -51,77 +39,81 @@ async function sha256(buf: ArrayBuffer) {
   return [...h].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Baixa um modelo uma vez e guarda na Cache API; depois lê do cache. */
-async function modelBytes(name: string, onProgress?: (done: number, total: number) => void, keep = true): Promise<Uint8Array | null> {
-  const url = new URL(name, modelBase).href;
-  // Sem Cache API (ou com erro nela) baixa toda vez, mas funciona.
-  const cache = await caches.open(MODEL_CACHE).catch(() => null);
-  const hit = await cache?.match(url);
-  if (hit) return keep ? new Uint8Array(await hit.arrayBuffer()) : null;
-  const res = await fetch(url);
-  if (!res.ok || !res.body) throw new Error(`modelo ${name}: HTTP ${res.status}`);
-  const total = +(res.headers.get("content-length") ?? 0);
-  const chunks: Uint8Array[] = [];
-  let done = 0;
-  const reader = res.body.getReader();
-  for (;;) {
-    const { done: end, value } = await reader.read();
-    if (end) break;
-    chunks.push(value);
-    done += value.length;
-    onProgress?.(done, total);
+/** Um worker do onnxruntime-web, que vive enquanto o seu modelo está em uso. */
+class OrtWorker {
+  private worker: Worker;
+  private pending = new Map<number, { resolve: (m: Extract<FromOrt, { type: "result" }>) => void; reject: (e: Error) => void }>();
+  private nextId = 1;
+
+  constructor(gpu: boolean) {
+    // Dois arquivos porque o pacote com WebGPU traz um WebAssembly duas vezes maior.
+    this.worker = gpu
+      ? new Worker(new URL("./ort-worker-gpu.ts", import.meta.url), { type: "module" })
+      : new Worker(new URL("./ort-worker.ts", import.meta.url), { type: "module" });
+    this.worker.onmessage = (e: MessageEvent<FromOrt>) => {
+      const m = e.data;
+      const p = this.pending.get(m.id);
+      this.pending.delete(m.id);
+      if (m.type === "result") p?.resolve(m);
+      else p?.reject(new Error(m.message));
+    };
+    this.worker.onerror = (e) => this.fail(new Error(`worker do onnxruntime: ${e.message || "falhou (falta de memória?)"}`));
+    this.send({ type: "init", modelBase, webgpu: gpu });
   }
-  const blob = new Blob(chunks as BlobPart[]);
-  const cached = await cache
-    ?.put(url, new Response(blob, { headers: { "content-type": "application/octet-stream" } }))
-    .then(() => true, () => false);
-  return keep || !cached ? new Uint8Array(await blob.arrayBuffer()) : null;
-}
 
-function session(model: string): Promise<ort.InferenceSession> {
-  let s = sessions.get(model);
-  if (!s) {
-    const kind = kindOf(model);
-    s = (async () => {
-      const bytes = (await modelBytes(model))!;
-      const t0 = performance.now();
-      const eps: ort.InferenceSession.ExecutionProviderConfig[] =
-        kind === "segnet" && useWebGPU ? ["webgpu", "wasm"] : ["wasm"];
-      const sess = await ort.InferenceSession.create(bytes, { executionProviders: eps, graphOptimizationLevel: "all" });
-      times[kind].createMs += performance.now() - t0;
-      backend[kind] = String(eps[0]);
-      return sess;
-    })();
-    sessions.set(model, s);
+  private send(m: ToOrt, transfer: Transferable[] = []) {
+    this.worker.postMessage(m, { transfer });
   }
-  return s;
+
+  private fail(err: Error) {
+    for (const p of this.pending.values()) p.reject(err);
+    this.pending.clear();
+  }
+
+  run(model: string, feeds: Record<string, WireTensor | TensorRef>, outs: string[], keep: string[], transfer: Transferable[]) {
+    const id = this.nextId++;
+    return new Promise<Extract<FromOrt, { type: "result" }>>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.send({ type: "run", id, model, feeds, outs, keep }, transfer);
+    });
+  }
+
+  terminate() {
+    this.worker.terminate();
+    this.fail(new Error("worker do onnxruntime encerrado"));
+  }
 }
 
-async function releaseSegnet() {
-  for (const [model, s] of sessions)
-    if (kindOf(model) === "segnet") {
-      sessions.delete(model);
-      await (await s).release();
-    }
+/**
+ * Só um modelo carregado por vez, cada um no seu worker: ao trocar de modelo (segmentação → encoder → decoder →
+ * encoder da pauta seguinte…), o worker anterior é encerrado e o heap WebAssembly dele (centenas de MB) volta ao
+ * sistema. Criar o worker e a sessão de novo custa ~1 s, contra ~10–30 s de cada pauta.
+ */
+let current: { kind: Kind; worker: OrtWorker } | null = null;
+
+function endModel() {
+  current?.worker.terminate();
+  current = null;
 }
 
-const TYPES = new Map<unknown, ort.Tensor.Type>([
+const TYPES = new Map<unknown, string>([
   [Float32Array, "float32"],
   [BigInt64Array, "int64"],
   [Int32Array, "int32"],
   [Uint8Array, "uint8"],
 ]);
 
-/** numpy (PyProxy) → ort.Tensor, copiando para fora da memória do Pyodide. Tensores do JS passam direto. */
-function toTensor(v: any): ort.Tensor {
-  if (v instanceof ort.Tensor) return v;
+/** numpy (PyProxy) → tensor para o worker do onnxruntime, copiado para fora da memória do Pyodide. */
+function toWire(v: any, transfer: Transferable[]): WireTensor {
   const buf = v.getBuffer();
   try {
     let data = buf.data;
     let type = TYPES.get(data.constructor);
     if (data instanceof Float64Array) [data, type] = [Float32Array.from(data), "float32"];
+    else data = data.slice();
     if (!type) throw new Error(`tipo de array não suportado: ${data.constructor.name}`);
-    return new ort.Tensor(type, data.slice(), buf.shape);
+    transfer.push(data.buffer);
+    return { type, dims: buf.shape, data };
   } finally {
     buf.release();
     v.destroy();
@@ -130,43 +122,47 @@ function toTensor(v: any): ort.Tensor {
 
 /** Chamado pela fachada `onnxruntime` (Python). Os argumentos são copiados antes do primeiro await. */
 const bridge = {
-  run(model: string, names: any, values: any, outputs: any): Promise<ort.Tensor[]> {
+  run(model: string, names: any, values: any, outputs: any): Promise<(WireTensor | TensorRef)[]> {
     const ns: string[] = names.toJs();
     const outs: string[] = outputs.toJs();
-    const feeds: Record<string, ort.Tensor> = {};
+    const feeds: Record<string, WireTensor | TensorRef> = {};
+    const transfer: Transferable[] = [];
     let i = 0;
-    for (const v of values) feeds[ns[i++]] = toTensor(v);
-    return runModel(model, feeds, outs);
+    // Arrays do numpy chegam como PyProxy; saídas anteriores (objetos do JS) voltam como estão.
+    for (const v of values) feeds[ns[i++]] = v instanceof py.ffi.PyProxy ? toWire(v, transfer) : v;
+    return runModel(model, feeds, outs, transfer);
   },
 };
 
-async function runModel(model: string, feeds: Record<string, ort.Tensor>, outs: string[]) {
+async function runModel(model: string, feeds: Record<string, WireTensor | TensorRef>, outs: string[], transfer: Transferable[]) {
   const kind = kindOf(model);
-  // A segmentação acabou quando o transformer começa: libera a sessão dela (~200 MB) até a próxima página.
-  if (kind !== "segnet") await releaseSegnet();
-  const s = await session(model);
-  const t0 = performance.now();
-  const r = await s.run(feeds, outs);
+  if (current?.kind !== kind) {
+    endModel();
+    current = { kind, worker: new OrtWorker(kind === "segnet" && useWebGPU) };
+  }
+  // O cache do decoder (32 tensores por passo) fica no worker do onnxruntime: só serve para o passo seguinte.
+  const keep = outs.filter((n) => n.startsWith("cache_out"));
+  const r = await current.worker.run(model, feeds, outs, keep, transfer);
   const t = times[kind];
-  t.ms += performance.now() - t0;
+  t.ms += r.ms;
+  t.createMs += r.createMs;
   t.runs++;
+  backend[kind] = r.backend;
   if (kind !== "decoder" || t.runs % 25 === 0) post({ type: "run", kind, runs: t.runs });
-  return outs.map((n) => r[n]);
+  return r.outputs;
 }
 
 async function init(base: string, webgpu: boolean, batch: number) {
   modelBase = base;
   segnetBatch = batch;
   useWebGPU = webgpu && "gpu" in navigator;
-  ort.env.wasm.wasmPaths = ORT_WASM;
-  ort.env.logLevel = "error";
 
   status("Baixando os modelos (só na primeira vez, ~157 MB)…");
   const sizes: number[] = MODELS.map(() => 0);
   const totals: number[] = MODELS.map(() => 0);
   await Promise.all(
     MODELS.map((m, i) =>
-      modelBytes(m, (d, t) => {
+      modelBytes(modelBase, m, (d, t) => {
         sizes[i] = d;
         totals[i] = t;
         post({ type: "download", done: sizes.reduce((a, b) => a + b), total: totals.reduce((a, b) => a + b) });
@@ -219,7 +215,7 @@ async function page(index: number, bytes: ArrayBuffer, ext: string) {
     if (what === "staffs") post({ type: "staffs", count: v as number });
     else extra[what] = v;
   };
-  const xml: string = await recognize(path, report, segnetBatch);
+  const xml: string = await recognize(path, report, segnetBatch).finally(endModel);
   py.FS.unlink(path);
   py.runPython("import gc; gc.collect()");
   const after = snapshot();

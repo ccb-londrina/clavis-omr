@@ -9,16 +9,18 @@ Por baixo, é o [homr](https://github.com/liebharc/homr) 0.7.0 (Python) rodando 
 (WebAssembly; WebGPU opcional na segmentação). O resultado é o mesmo do homr nativo (~97% das alturas no
 Hinário nº 5), em ~3–4 min por página num desktop (~2,5 min com WebGPU).
 
-> **Protótipo.** Funciona no desktop. No celular ainda não foi medido, e a aba usa ~1,2–1,4 GB de memória.
+> **Protótipo.** Funciona no desktop. No celular ainda não foi medido; a aba usa ~0,8–0,95 GB de memória no pico.
 
 ## Como funciona
 
 | Arquivo | O que faz |
 |---|---|
 | `index.html`, `src/main.ts`, `src/omr.css` | a página: escolher/fotografar as páginas, progresso, juntar as páginas (`src/merge.ts`), abrir no Clavis ou baixar o `.musicxml` |
-| `src/worker.ts` | Web Worker: carrega o Pyodide (numpy, OpenCV, Pillow) do CDN, instala as **wheels do homr 0.7.0 e do musicxml 1.4 direto do PyPI** (conferidas pelo sha256) e roda as redes no onnxruntime-web |
-| `src/py/onnxruntime/` | fachada Python do pacote `onnxruntime` que delega ao onnxruntime-web |
-| `src/py/clavis_omr.py` | aplica o patch no homr instalado (as chamadas ao onnxruntime viram `await`) e reconhece uma página |
+| `src/worker.ts` | Web Worker: carrega o Pyodide (numpy, OpenCV, Pillow) do CDN, instala as **wheels do homr 0.7.0 e do musicxml 1.4 direto do PyPI** (conferidas pelo sha256) e manda as redes para os workers do onnxruntime-web |
+| `src/ort-serve.ts`, `src/ort-worker*.ts` | um worker do onnxruntime-web **por modelo, um de cada vez** (segmentação → encoder → decoder → …): ao trocar de modelo, o anterior é encerrado e a memória WebAssembly dele volta ao sistema (memória WebAssembly não encolhe enquanto o worker vive) |
+| `src/models.ts` | lista dos modelos, download e Cache API |
+| `src/py/onnxruntime/` | fachada Python do pacote `onnxruntime` que delega ao onnxruntime-web; o cache do decoder fica no worker do onnxruntime entre um passo e outro |
+| `src/py/clavis_omr.py` | aplica o patch no homr instalado (as chamadas ao onnxruntime viram `await`; a segmentação guarda a imagem e os mapas em uint8, com o mesmo resultado) e reconhece uma página |
 | `scripts/omr-models.mjs` | `npm run omr-models`: baixa os 3 modelos ONNX do homr (~150 MB) para `public/omr-models/` |
 
 **Integração com o Clavis.** A página é publicada numa subpasta do Clavis (`<clavis>/omr/`), na mesma origem.

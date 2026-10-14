@@ -10,7 +10,8 @@ Parte do Clavis OMR — AGPL-3.0-or-later (veja README.md na raiz do repositóri
 (https://github.com/liebharc/homr, AGPL-3.0), feitas em 2026-10 para rodar no navegador:
 - inferência assíncrona (lista PATCHES);
 - título (OCR com rapidocr) desligado: não há threads nem rapidocr no Pyodide;
-- lote da segmentação ajustável (SEGNET_BATCH_SIZE).
+- lote da segmentação ajustável (SEGNET_BATCH_SIZE);
+- segmentação com menos memória (imagem e mapas de classes em uint8), com o mesmo resultado.
 """
 
 import os
@@ -31,6 +32,13 @@ PATCHES: list[tuple[str, str, str, int]] = [
     ("segmentation/inference_segnet.py",
      "batch_out = model.run(", "batch_out = await model.run(", 2),
     ("segmentation/inference_segnet.py", "\ndef extract(", "\nasync def extract(", 1),
+    # memória: a imagem fica em uint8 (o Segnet.run converte cada lote para float32, com os mesmos valores) e
+    # os mapas de classes (0–5) em uint8 em vez de int64. O resultado é idêntico; o pico do Python cai ~140 MB.
+    ("segmentation/inference_segnet.py",
+     "    image = np.transpose(image_org, (2, 0, 1)).astype(np.float32)\n",
+     "    image = np.transpose(image_org, (2, 0, 1))\n", 1),
+    ("segmentation/inference_segnet.py",
+     "data.append(np.argmax(out, axis=0))", "data.append(np.argmax(out, axis=0).astype(np.uint8))", 2),
     ("segmentation/inference_segnet.py",
      "clefs_keys = inference(\n", "clefs_keys = await inference(\n", 1),
     # --- main: segmentação → detecção das pautas
