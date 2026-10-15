@@ -1,11 +1,14 @@
 {
   "name": "clavis-omr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Clavis OMR — reconhece fotos de partitura no navegador (homr + Pyodide + onnxruntime-web) e abre o resultado no Clavis",
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "private": true,
-  "repository": { "type": "git", "url": "https://github.com/ccb-londrina/clavis-omr.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ccb-londrina/clavis-omr.git"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
